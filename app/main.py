@@ -27,8 +27,8 @@ def synchronize_report_data(accountId, url, prefix):
         file_path = '/tmp/' + file_name
 
         # write file and push to S3
-        with open(file_path, 'wb') as f:
-            f.write(decoded_response)
+        with open(file_path, 'wb') as out:
+            out.write(decoded_response)
         print 'push file ' + file_name
         # put_file_to_s3(file_path, PREFIX + '/' + file_name)
         start_index += line_helper.max_result
