@@ -1,71 +1,47 @@
-import sys
-import json
-from modules import S3Helper
-from modules import LineHelper
-from modules import constants
-from modules.common import get_today_str, generate_file_name
-
-
-def synchronize_report_data(accountId, url, prefix):
-    start_index = 1
-    counter = 0
-    line_helper = LineHelper(url, max_result=20000)
-
-    while(True):
-        payload = {'startDate': get_today_str(), 'endDate': get_today_str(),
-                   'accounts': [accountId], 'reportType': 'CAMPAIGN', 'start': start_index, 'results': line_helper.max_result}
-
-        response = line_helper.get_data_from_line(payload)
-        decoded_response = response.text.encode("utf-8")
-
-        if len(decoded_response.split('\n')) <= 2:
-            print 'finish'
-            break
-
-        counter += 1
-        file_name = generate_file_name(prefix, accountId, counter, '.tsv')
-        file_path = '/tmp/' + file_name
-
-        # write file and push to S3
-        with open(file_path, 'wb') as out:
-            out.write(decoded_response)
-        print 'push file ' + file_name
-        # put_file_to_s3(file_path, PREFIX + '/' + file_name)
-        start_index += line_helper.max_result
-
-
-def synchronize_structure_data(accountId, url, prefix):
-    start_index = 1
-    counter = 0
-    line_helper = LineHelper(url)
-    s3_helper = S3Helper()
-
-    while(True):
-        counter += 1
-        payload = {'accountId': accountId, 'removed': False, 'start': start_index,
-                   'results': line_helper.max_result, 'sortType': 'ASC', 'sortKey': 'ID'}
-        response = line_helper.get_data_from_line(payload)
-        decoded_response = response.json()
-        current_records = len(decoded_response["operands"])
-
-        file_name = generate_file_name(prefix, accountId, counter, '.json')
-        file_path = '/tmp/' + file_name
-
-        # write file and push to S3
-        with open(file_path, 'wb') as out:
-            json.dump(decoded_response, out, sort_keys=True,
-                      indent=4, separators=(',', ': '))
-        print 'push file ' + file_name
-        s3_helper.put_file_to_s3(file_path, prefix + '/' + file_name)
-        start_index += line_helper.max_result
-
-        if current_records < line_helper.max_result:
-            print 'finish'
-            break
-
+#!/usr/bin/python
+import time
+import argparse
+import threading
+from sync_thread import SyncThread
+from modules import SMDBHelper
+from synchronization import Synchronization
+from modules.common import info
+from modules import SlackHelper
 
 if __name__ == '__main__':
-    synchronize_report_data(
-        1256, constants.REPORT_CAMPAIGN_URL, constants.REPORT_CAMPAIGN_PREFIX)
-    synchronize_structure_data(
-        1256, constants.MEDIA_URL, constants.MEDIA_PREFIX)
+    parser = argparse.ArgumentParser(description='This is a S3 sync tool')
+    parser.add_argument('-i','--input', help='Input account Id (default is all account)',required=False)
+    parser.add_argument('-n','--number', help='number of thread (default is 4)',required=False)
+    args = parser.parse_args()
+
+    threads_num = 4 #default number thread
+    if args.number:
+        threads_num = int(args.number)
+
+    start = time.time()
+    slack = SlackHelper()
+    #Using lock to prevent multiple thread change Line Access Token at the same time, check the line_helper.py
+    lock = threading.Lock()
+
+    if args.input:
+        account_id = args.input
+        info('Starting download account ' + account_id)
+        sync = Synchronization(account_id, lock)
+        sync.synchronize()
+        info('Finish')
+    else:
+        msg = 'Starting download report and structure data of all accounts'
+        slack.send_msg(msg)
+        info(msg)
+        smdb_helper = SMDBHelper()
+        accounts = smdb_helper.get_all_account_data()
+        for i in range(threads_num):
+            t = SyncThread(accounts, lock)
+            t.setDaemon(True)
+            t.start()
+        accounts.join()
+        end = time.time()
+        duration = round((end - start) / 60, 2)
+        msg = 'Finish task in {0} minute'.format(duration)
+        info(msg)
+        slack.send_msg(msg)

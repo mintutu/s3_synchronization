@@ -1,0 +1,4 @@
+slackclient==1.0.5
+boto==2.48.0
+requests==2.13.0
+mysql_connector_repackaged==0.3.1
